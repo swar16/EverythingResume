@@ -8,7 +8,7 @@ from langgraph.graph.message import add_messages
 import os
 import sqlite3
 load_dotenv()  
-from schema import ProfileExtraction, ProfileFact, JobExtraction, JobRequirement
+from schema import MatchingResult, ProfileExtraction, ProfileFact, JobExtraction, JobRequirement
 
 model = ChatOpenAI(
     model="cohere/north-mini-code:free",
@@ -22,6 +22,7 @@ class ResumeState(TypedDict, total=False):
 
     profile_facts: list[dict]
     job_requirements: list[dict]
+    requirement_matches: list[dict]
     proposed_bullets: list[dict]
     verification_issues: list[str]
 
@@ -51,6 +52,11 @@ profile_extractor = model.with_structured_output(
 
 job_extractor = model.with_structured_output(
     JobExtraction,
+    method="function_calling",
+)
+
+matcher = model.with_structured_output(
+    MatchingResult,
     method="function_calling",
 )
 
@@ -97,6 +103,46 @@ Include an exact supporting quote for every requirement."""
             for requirement in result.requirements
         ]
     }
+
+def match_requirements(state: ResumeState) -> dict:
+    facts = state.get("profile_facts", [])
+    requirements = state.get("job_requirements", [])
+
+    if not requirements:
+        return {"requirement_matches": []}
+
+    result = matcher.invoke([
+        (
+            "system",
+            """Compare each job requirement with the profile facts.
+Return one match per requirement, using its zero-based index.
+Only use supporting fact indices that refer to the supplied profile facts.
+Use 'missing' when the profile contains no supporting evidence."""
+        ),
+        (
+            "human",
+            f"""Profile facts:
+{facts}
+
+Job requirements:
+{requirements}"""
+        ),
+    ])
+
+    matches = [match.model_dump() for match in result.matches]
+
+    # Reject references to facts or requirements that don't exist.
+    for match in matches:
+        if not 0 <= match["requirement_index"] < len(requirements):
+            raise ValueError("Model returned an invalid requirement index")
+
+        for fact_index in match["supporting_fact_indices"]:
+            if not 0 <= fact_index < len(facts):
+                raise ValueError("Model returned an invalid profile fact index")
+
+    return {"requirement_matches": matches}
+
+
 conn= sqlite3.connect(database='resume_bot.db',check_same_thread=False)
 checkpointer = SqliteSaver(conn=conn)
 graph = StateGraph(ResumeState)

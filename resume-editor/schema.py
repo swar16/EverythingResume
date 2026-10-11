@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from typing import Literal
 
 class ProfileFact(BaseModel):
     category: str = Field(description="For example: project, skill, education, or experience")
@@ -17,3 +18,13 @@ class JobRequirement(BaseModel):
 
 class JobExtraction(BaseModel):
     requirements: list[JobRequirement]
+
+class RequirementMatch(BaseModel):
+    requirement_index: int
+    status: Literal["supported", "partially_supported", "missing"]
+    supporting_fact_indices: list[int]
+    explanation: str
+
+
+class MatchingResult(BaseModel):
+    matches: list[RequirementMatch]
