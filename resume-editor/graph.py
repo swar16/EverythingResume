@@ -9,6 +9,7 @@ import os
 import sqlite3
 load_dotenv()  
 from schema import MatchingResult, ProfileExtraction, ProfileFact, JobExtraction, JobRequirement
+from langgraph.types import interrupt
 
 model = ChatOpenAI(
     model="cohere/north-mini-code:free",
@@ -141,6 +142,37 @@ Job requirements:
                 raise ValueError("Model returned an invalid profile fact index")
 
     return {"requirement_matches": matches}
+
+def ask_for_clarification(state: ResumeState) -> dict:
+    matches = state.get("requirement_matches", [])
+    requirements = state.get("job_requirements", [])
+
+    gap = next(
+        (
+            match for match in matches
+            if match["status"] in {"missing", "partially_supported"}
+        ),
+        None,
+    )
+
+    if gap is None:
+        return {}
+
+    requirement = requirements[gap["requirement_index"]]["requirement"]
+
+    question = (
+        f"Your profile doesn't provide clear evidence for this job requirement: "
+        f"{requirement}. Is this experience missing from your profile, or can you "
+        "share relevant details? You can also reply 'not applicable'."
+    )
+
+    answer = interrupt({"question": question})
+
+    return {
+        "clarification_question": question,
+        "clarification_answer": answer,
+    }
+
 
 
 conn= sqlite3.connect(database='resume_bot.db',check_same_thread=False)
