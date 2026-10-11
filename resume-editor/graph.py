@@ -49,20 +49,36 @@ def validate_inputs(state: ResumeState) -> dict:
 profile_extractor = model.with_structured_output(
     ProfileExtraction,
     method="function_calling",
+    include_raw=True,
 )
 
 job_extractor = model.with_structured_output(
     JobExtraction,
     method="function_calling",
+    include_raw=True,
 )
 
 matcher = model.with_structured_output(
     MatchingResult,
     method="function_calling",
+    include_raw=True,
 )
 
+
+def invoke_structured(extractor, messages, operation):
+    for attempt in range(2):
+        result = extractor.invoke(messages)
+        parsed = result.get("parsed") if isinstance(result, dict) else result
+        if parsed is not None:
+            return parsed
+
+    raise RuntimeError(
+        f"The model returned no structured output while {operation}. "
+        "Try submitting again or use a model with function-calling support."
+    )
+
 def extract_profile_facts(state: ResumeState) -> dict:
-    result = profile_extractor.invoke([
+    result = invoke_structured(profile_extractor, [
         (
             "system",
             """Extract facts explicitly stated in the user's profile.
@@ -73,7 +89,7 @@ def extract_profile_facts(state: ResumeState) -> dict:
             "human",
             f"Profile:\n{state['profile_context']}",
         ),
-    ])
+    ], "extracting profile facts")
 
     return {
         "profile_facts": [
@@ -88,7 +104,7 @@ def extract_job_requirements(state: ResumeState) -> dict:
     if not job_description:
         return {"job_requirements": []}
 
-    result = job_extractor.invoke([
+    result = invoke_structured(job_extractor, [
         (
             "system",
             """Extract the requirements explicitly stated in the job description.
@@ -96,7 +112,7 @@ Do not add requirements based on assumptions.
 Include an exact supporting quote for every requirement."""
         ),
         ("human", f"Job description:\n{job_description}"),
-    ])
+    ], "extracting job requirements")
 
     return {
         "job_requirements": [
@@ -112,7 +128,7 @@ def match_requirements(state: ResumeState) -> dict:
     if not requirements:
         return {"requirement_matches": []}
 
-    result = matcher.invoke([
+    result = invoke_structured(matcher, [
         (
             "system",
             """Compare each job requirement with the profile facts.
@@ -128,7 +144,7 @@ Use 'missing' when the profile contains no supporting evidence."""
 Job requirements:
 {requirements}"""
         ),
-    ])
+    ], "matching requirements")
 
     matches = [match.model_dump() for match in result.matches]
 
@@ -181,10 +197,15 @@ graph = StateGraph(ResumeState)
 graph.add_node('validate_inputs', validate_inputs)
 graph.add_node('extract_profile_facts', extract_profile_facts)
 graph.add_node('extract_job_requirements', extract_job_requirements)
+graph.add_node('match_requirements', match_requirements)
+graph.add_node('ask_for_clarification', ask_for_clarification)
+
 graph.add_edge(START, 'validate_inputs')
 graph.add_edge('validate_inputs', 'extract_profile_facts')
 graph.add_edge('extract_profile_facts', 'extract_job_requirements')
-graph.add_edge('extract_job_requirements', END)
+graph.add_edge('extract_job_requirements', 'match_requirements')
+graph.add_edge('match_requirements', 'ask_for_clarification')
+graph.add_edge('ask_for_clarification', END)
 
 
 
