@@ -1,0 +1,34 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime databases and checkpoint files
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.bin
+
+# Streamlit and local tooling state
+.streamlit/secrets.toml
+.streamlit/cache/
+
+# OS and editor files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
