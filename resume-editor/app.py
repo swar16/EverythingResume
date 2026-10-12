@@ -42,6 +42,9 @@ if not st.session_state.get("awaiting_clarification", False):
         if not profile_context.strip():
             st.error("Please paste your resume or profile details.")
         else:
+            # Start a fresh graph thread for each new resume/job submission.
+            st.session_state["thread_id"] = str(uuid4())
+            st.session_state.pop("result", None)
             st.session_state["profile_context"] = profile_context.strip()
             st.session_state["job_description"] = job_description.strip()
             try:

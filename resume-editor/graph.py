@@ -29,6 +29,9 @@ class ResumeState(TypedDict, total=False):
 
     clarification_question: str
     clarification_answer: str
+    clarification_requirement_index: int
+    skipped_requirement_indexes: list[int]
+    clarification_history: list[dict]
 
     review_feedback: str
     approved: bool
@@ -157,39 +160,117 @@ Job requirements:
             if not 0 <= fact_index < len(facts):
                 raise ValueError("Model returned an invalid profile fact index")
 
-    return {"requirement_matches": matches}
+    return {
+        "requirement_matches": [
+            match.model_dump()
+            for match in result.matches
+        ]
+    }
 
-def ask_for_clarification(state: ResumeState) -> dict:
-    matches = state.get("requirement_matches", [])
-    requirements = state.get("job_requirements", [])
 
-    gap = next(
+def find_unresolved_match(state: ResumeState):
+    skipped = set(state.get("skipped_requirement_indexes", []))
+
+    return next(
         (
-            match for match in matches
+            match
+            for match in state.get("requirement_matches", [])
             if match["status"] in {"missing", "partially_supported"}
+            and match["requirement_index"] not in skipped
         ),
         None,
     )
 
-    if gap is None:
-        return {}
+def ask_for_clarification(state: ResumeState) -> dict:
+    gap = find_unresolved_match(state)
 
-    requirement = requirements[gap["requirement_index"]]["requirement"]
+    if gap is None:
+        raise ValueError("No unresolved requirement to clarify.")
+
+    requirement_index = gap["requirement_index"]
+    requirement = state["job_requirements"][requirement_index]["requirement"]
 
     question = (
-        f"Your profile doesn't provide clear evidence for this job requirement: "
-        f"{requirement}. Is this experience missing from your profile, or can you "
-        "share relevant details? You can also reply 'not applicable'."
+        f"Your profile doesn't clearly support this requirement: "
+        f"{requirement}. Can you share relevant experience or details? "
+        "You can also reply 'not applicable'."
     )
 
-    answer = interrupt({"question": question})
+    answer = interrupt({
+        "question": question,
+        "requirement_index": requirement_index,
+    })
 
     return {
+        "clarification_requirement_index": requirement_index,
         "clarification_question": question,
         "clarification_answer": answer,
     }
 
+def incorporate_clarification(state: ResumeState) -> dict:
+    requirement_index = state["clarification_requirement_index"]
+    question = state["clarification_question"]
+    answer = state["clarification_answer"].strip()
 
+    history = state.get("clarification_history", []) + [
+        {
+            "requirement_index": requirement_index,
+            "question": question,
+            "answer": answer,
+        }
+    ]
+
+    # No LLM call is needed for an explicit skip.
+    if answer.casefold().rstrip(".!?") == "not applicable":
+        skipped = state.get("skipped_requirement_indexes", [])
+
+        return {
+            "skipped_requirement_indexes": list(
+                dict.fromkeys(skipped + [requirement_index])
+            ),
+            "clarification_history": history,
+        }
+
+    requirement = state["job_requirements"][requirement_index]["requirement"]
+
+    result = invoke_structured(
+        profile_extractor,
+        [
+            (
+                "system",
+                """
+                Extract profile facts explicitly stated in the user's answer.
+                The question and job requirement provide context only.
+                Do not treat their wording as evidence about the user.
+                Do not invent or infer achievements, skills, or metrics.
+                Every fact must have a supporting quote from the user's answer.
+                """,
+            ),
+            (
+                "human",
+                f"Job requirement:\n{requirement}\n\n"
+                f"Clarification question:\n{question}\n\n"
+                f"User answer:\n{answer}",
+            ),
+        ],
+        "extracting clarification facts",
+    )
+
+    new_facts = [fact.model_dump() for fact in result.facts]
+
+    
+
+    return {
+        "profile_facts": state.get("profile_facts", []) + new_facts,
+        "clarification_history": history,
+    }
+
+
+def route_after_matching(state: ResumeState) -> str:
+    if find_unresolved_match(state) is not None:
+        return "clarify"
+
+    return "done"
 
 conn= sqlite3.connect(database='resume_bot.db',check_same_thread=False)
 checkpointer = SqliteSaver(conn=conn)
@@ -198,14 +279,23 @@ graph.add_node('validate_inputs', validate_inputs)
 graph.add_node('extract_profile_facts', extract_profile_facts)
 graph.add_node('extract_job_requirements', extract_job_requirements)
 graph.add_node('match_requirements', match_requirements)
-graph.add_node('ask_for_clarification', ask_for_clarification)
+graph.add_node("ask_for_clarification", ask_for_clarification)
+graph.add_node("incorporate_clarification", incorporate_clarification)
 
 graph.add_edge(START, 'validate_inputs')
 graph.add_edge('validate_inputs', 'extract_profile_facts')
 graph.add_edge('extract_profile_facts', 'extract_job_requirements')
 graph.add_edge('extract_job_requirements', 'match_requirements')
-graph.add_edge('match_requirements', 'ask_for_clarification')
-graph.add_edge('ask_for_clarification', END)
+graph.add_edge('ask_for_clarification', "incorporate_clarification")
+graph.add_edge("incorporate_clarification", 'match_requirements')
+graph.add_conditional_edges(
+    "match_requirements",
+    route_after_matching,
+    {
+        "clarify": "ask_for_clarification",
+        "done": END,
+    },
+)
 
 
 
