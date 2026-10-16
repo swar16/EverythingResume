@@ -69,7 +69,7 @@ matcher = model.with_structured_output(
 
 
 def invoke_structured(extractor, messages, operation):
-    for attempt in range(2):
+    for _ in range(2):
         result = extractor.invoke(messages)
         parsed = result.get("parsed") if isinstance(result, dict) else result
         if parsed is not None:
@@ -131,41 +131,77 @@ def match_requirements(state: ResumeState) -> dict:
     if not requirements:
         return {"requirement_matches": []}
 
-    result = invoke_structured(matcher, [
-        (
-            "system",
-            """Compare each job requirement with the profile facts.
-Return one match per requirement, using its zero-based index.
+    expected = set(range(len(requirements)))
+    validation_error = None
+
+    for _ in range(2):
+        retry_instruction = (
+            f"Your previous result was invalid: {validation_error}. "
+            "Please correct it and return exactly one match for every requirement."
+            if validation_error
+            else ""
+        )
+
+        result = invoke_structured(
+            matcher,
+            [
+                (
+                    "system",
+                    """Compare each job requirement with the profile facts.
+Return exactly one match for every requirement, using each zero-based
+requirement index exactly once.
 Only use supporting fact indices that refer to the supplied profile facts.
-Use 'missing' when the profile contains no supporting evidence."""
-        ),
-        (
-            "human",
-            f"""Profile facts:
+Use 'missing' when the profile contains no supporting evidence.""",
+                ),
+                (
+                    "human",
+                    f"""Profile facts:
 {facts}
 
 Job requirements:
-{requirements}"""
-        ),
-    ], "matching requirements")
+{requirements}
 
-    matches = [match.model_dump() for match in result.matches]
+{retry_instruction}""",
+                ),
+            ],
+            "matching requirements",
+        )
 
-    # Reject references to facts or requirements that don't exist.
-    for match in matches:
-        if not 0 <= match["requirement_index"] < len(requirements):
-            raise ValueError("Model returned an invalid requirement index")
+        matches = [match.model_dump() for match in result.matches]
+        seen = set()
+        validation_error = None
 
-        for fact_index in match["supporting_fact_indices"]:
-            if not 0 <= fact_index < len(facts):
-                raise ValueError("Model returned an invalid profile fact index")
+        for match in matches:
+            index = match["requirement_index"]
+            if index not in expected:
+                validation_error = f"invalid requirement index {index}"
+                break
+            if index in seen:
+                validation_error = f"duplicate match for requirement index {index}"
+                break
+            seen.add(index)
 
-    return {
-        "requirement_matches": [
-            match.model_dump()
-            for match in result.matches
-        ]
-    }
+            for fact_index in match["supporting_fact_indices"]:
+                if not 0 <= fact_index < len(facts):
+                    validation_error = f"invalid profile fact index {fact_index}"
+                    break
+            if validation_error:
+                break
+
+        if validation_error is None:
+            missing = expected - seen
+            if missing:
+                validation_error = (
+                    f"missing matches for requirement indexes {sorted(missing)}"
+                )
+
+        if validation_error is None:
+            return {"requirement_matches": matches}
+
+    raise ValueError(
+        f"Model returned invalid requirement matches after 2 attempts: "
+        f"{validation_error}"
+    )
 
 
 def find_unresolved_match(state: ResumeState):

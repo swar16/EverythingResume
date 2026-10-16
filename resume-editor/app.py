@@ -56,7 +56,7 @@ if not st.session_state.get("awaiting_clarification", False):
                     config=graph_config(),
                 )
                 store_graph_result(result)
-            except RuntimeError as error:
+            except (RuntimeError, ValueError) as error:
                 st.error(str(error))
 
 
@@ -77,7 +77,7 @@ if st.session_state.get("awaiting_clarification", False):
                 )
                 store_graph_result(result)
                 st.rerun()
-            except RuntimeError as error:
+            except (RuntimeError, ValueError) as error:
                 st.error(str(error))
 
 
