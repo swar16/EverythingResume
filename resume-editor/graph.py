@@ -5,11 +5,13 @@ from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.message import add_messages
+import json
 import os
 import sqlite3
 load_dotenv()  
-from schema import MatchingResult, ProfileExtraction, ProfileFact, JobExtraction, JobRequirement
+from schema import BulletGenerationResult, MatchingResult, ProfileExtraction, ProfileFact, JobExtraction, JobRequirement
 from langgraph.types import interrupt
+from prompts import BULLET_WRITER_SYSTEM_PROMPT
 
 model = ChatOpenAI(
     model="cohere/north-mini-code:free",
@@ -67,6 +69,11 @@ matcher = model.with_structured_output(
     include_raw=True,
 )
 
+bullet_writer = model.with_structured_output(
+    BulletGenerationResult,
+    method="function_calling",
+    include_raw=True,
+)
 
 def invoke_structured(extractor, messages, operation):
     for _ in range(2):
@@ -308,6 +315,56 @@ def route_after_matching(state: ResumeState) -> str:
 
     return "done"
 
+def generate_bullets(state: ResumeState) -> dict:
+    facts = state.get("profile_facts", [])
+    requirements = state.get("job_requirements", [])
+    skipped = set(state.get("skipped_requirement_indexes", []))
+
+    if not facts:
+        return {"proposed_bullets": []}
+
+    inputs = {
+        "profile_facts": [
+            {**fact, "fact_index": index}
+            for index, fact in enumerate(facts)
+        ],
+        "job_requirements": [
+            {**requirement, "requirement_index": index}
+            for index, requirement in enumerate(requirements)
+        ],
+        "requirement_matches": state.get("requirement_matches", []),
+        "skipped_requirement_indexes": sorted(skipped),
+        "profile_context": state.get("profile_context", ""),
+    }
+    result = invoke_structured(
+        bullet_writer,
+        [
+            ("system", BULLET_WRITER_SYSTEM_PROMPT),
+            ("human", json.dumps(inputs, ensure_ascii=False)),
+        ],
+        "generating resume bullets",
+    )
+
+    for bullet in result.proposed_bullets:
+        if not bullet.bullet.strip():
+            raise ValueError("Model returned a blank resume bullet")
+        for fact_index in bullet.supporting_fact_indices:
+            if not 0 <= fact_index < len(facts):
+                raise ValueError("Bullet references an invalid profile fact index")
+        for requirement_index in bullet.target_requirement_indices:
+            if not 0 <= requirement_index < len(requirements):
+                raise ValueError("Bullet references an invalid requirement index")
+            if requirement_index in skipped:
+                raise ValueError("Bullet targets a skipped requirement")
+
+    return {
+        "proposed_bullets": [
+            bullet.model_dump()
+            for bullet in result.proposed_bullets
+        ]
+    }
+
+
 conn= sqlite3.connect(database='resume_bot.db',check_same_thread=False)
 checkpointer = SqliteSaver(conn=conn)
 graph = StateGraph(ResumeState)
@@ -317,6 +374,7 @@ graph.add_node('extract_job_requirements', extract_job_requirements)
 graph.add_node('match_requirements', match_requirements)
 graph.add_node("ask_for_clarification", ask_for_clarification)
 graph.add_node("incorporate_clarification", incorporate_clarification)
+graph.add_node('generate_bullets',generate_bullets)
 
 graph.add_edge(START, 'validate_inputs')
 graph.add_edge('validate_inputs', 'extract_profile_facts')
@@ -329,9 +387,10 @@ graph.add_conditional_edges(
     route_after_matching,
     {
         "clarify": "ask_for_clarification",
-        "done": END,
+        "done": "generate_bullets",
     },
 )
+graph.add_edge('generate_bullets', END)
 
 
 

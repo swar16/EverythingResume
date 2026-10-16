@@ -87,4 +87,16 @@ if result and not st.session_state.get("awaiting_clarification", False):
     st.write("Job requirements:", result.get("job_requirements", []))
     st.write("Requirement matches:", result.get("requirement_matches", []))
     st.write("Clarification answer:", result.get("clarification_answer", ""))
-    st.success("Input received.")
+    st.subheader("Suggested resume bullets")
+    bullets = result.get("proposed_bullets", [])
+    if not bullets:
+        st.info("No resume bullets could be drafted from the supplied facts.")
+    for bullet in bullets:
+        if bullet.get("entry_label"):
+            st.write(bullet["entry_label"])
+        st.write(bullet["bullet"])
+        with st.expander("Supporting evidence"):
+            facts = result.get("profile_facts", [])
+            for fact_index in bullet["supporting_fact_indices"]:
+                st.write(facts[fact_index]["fact"])
+    st.success("Resume analysis complete.")

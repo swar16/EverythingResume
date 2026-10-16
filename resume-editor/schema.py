@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, Optional
 
 class ProfileFact(BaseModel):
     category: str = Field(description="For example: project, skill, education, or experience")
@@ -28,3 +28,23 @@ class RequirementMatch(BaseModel):
 
 class MatchingResult(BaseModel):
     matches: list[RequirementMatch]
+
+class ProposedBullet(BaseModel):
+    entry_label: Optional[str] = Field(
+        description="Exact project or role label from the input, or null"
+    )
+    bullet: str = Field(
+        min_length=1,
+        description="Plain text resume bullet"
+    )
+    supporting_fact_indices: list[int] = Field(
+        min_length=1,
+        description="Indices of profile facts supporting every claim"
+    )
+    target_requirement_indices: list[int] = Field(
+        description="Related requirement indices; empty if none apply"
+    )
+
+
+class BulletGenerationResult(BaseModel):
+    proposed_bullets: list[ProposedBullet]
